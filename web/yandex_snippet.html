@@ -1,0 +1,175 @@
+<!-- Yandex.Games SDK bridge for the Godot web build.
+     _bin/patch_yandex.ps1 inserts this block into build/index.html before </head>.
+     src="/sdk.js" is the official relative path required for archive uploads (1.1). -->
+<script src="/sdk.js"></script>
+<script>
+	window.nlSdk = null;
+	window.nlPlayer = null;
+	window.nlDataRaw = "";
+	window.nlReadySent = false;
+	window.nlPaused = false;
+	window.nlRewardQueue = [];
+	window.nlLangValue = "";
+
+	// 1.6: no browser context menu over the game area (right click / long tap).
+	document.addEventListener("contextmenu", function (e) {
+		e.preventDefault();
+	}, { capture: true });
+
+	// 1.3: mute and pause when the tab is hidden or the window loses focus.
+	function nlSetPaused(value) {
+		window.nlPaused = !!value;
+	}
+	document.addEventListener("visibilitychange", function () {
+		nlSetPaused(document.hidden);
+	});
+	window.addEventListener("blur", function () { nlSetPaused(true); });
+	window.addEventListener("focus", function () { nlSetPaused(false); });
+
+	if (typeof YaGames !== "undefined") {
+		YaGames.init()
+			.then(function (sdk) {
+				window.nlSdk = sdk;
+				try {
+					window.nlLangValue = sdk.environment.i18n.lang || "";
+				} catch (e) {}
+				// Platform pause/resume events (1.3).
+				try {
+					sdk.on("game_api_pause", function () { nlSetPaused(true); });
+					sdk.on("game_api_resume", function () { nlSetPaused(false); });
+				} catch (e) {}
+				return sdk.getPlayer({ scopes: false });
+			})
+			.then(function (player) {
+				window.nlPlayer = player;
+				return player.getData(["nl"]);
+			})
+			.then(function (data) {
+				if (data && data.nl) {
+					window.nlDataRaw = JSON.stringify(data.nl);
+				}
+			})
+			.catch(function (err) {
+				console.warn("Yandex SDK unavailable:", err);
+			});
+	}
+
+	// 1.19.2 Game Ready API: the game is loaded and playable.
+	window.nlReady = function () {
+		if (window.nlReadySent) return;
+		window.nlReadySent = true;
+		try {
+			if (window.nlSdk && window.nlSdk.features && window.nlSdk.features.LoadingAPI) {
+				window.nlSdk.features.LoadingAPI.ready();
+			}
+		} catch (e) {
+			console.warn(e);
+		}
+	};
+
+	// 2.14: interface language for the game.
+	window.nlLang = function () {
+		return window.nlLangValue || "";
+	};
+
+	// 4.4: interstitial only between levels / on game over. 4.7: sound muted while it plays.
+	window.nlAd = function () {
+		try {
+			if (!window.nlSdk || !window.nlSdk.adv) return;
+			window.nlSdk.adv.showFullscreenAdv({
+				callbacks: {
+					open: function () { nlSetPaused(true); },
+					close: function () { nlSetPaused(false); },
+					error: function () { nlSetPaused(false); },
+				},
+			});
+		} catch (e) {
+			nlSetPaused(false);
+		}
+	};
+
+	// 4.5: rewarded video, always called after an explicit in-game confirmation.
+	window.nlRewarded = function (tag) {
+		try {
+			if (!window.nlSdk || !window.nlSdk.adv) return;
+			window.nlSdk.adv.showRewardedVideo({
+				callbacks: {
+					open: function () { nlSetPaused(true); },
+					rewarded: function () { window.nlRewardQueue.push(tag); },
+					close: function () { nlSetPaused(false); },
+					error: function () { nlSetPaused(false); },
+				},
+			});
+		} catch (e) {
+			nlSetPaused(false);
+		}
+	};
+
+	// Godot polls this: returns a reward tag once, or an empty string.
+	window.nlTakeReward = function () {
+		if (window.nlRewardQueue.length === 0) return "";
+		return window.nlRewardQueue.shift();
+	};
+
+	window.nlGameplayStart = function () {
+		try {
+			if (window.nlSdk && window.nlSdk.features && window.nlSdk.features.GameplayAPI) {
+				window.nlSdk.features.GameplayAPI.start();
+			}
+		} catch (e) {}
+	};
+
+	window.nlGameplayStop = function () {
+		try {
+			if (window.nlSdk && window.nlSdk.features && window.nlSdk.features.GameplayAPI) {
+				window.nlSdk.features.GameplayAPI.stop();
+			}
+		} catch (e) {}
+	};
+
+	// Fullscreen: Yandex SDK first, then the plain browser API as a fallback
+	// (works both inside the Yandex frame and in a standalone build).
+	window.nlFullscreen = function () {
+		var sdkDone = false;
+		try {
+			if (window.nlSdk && window.nlSdk.screen && window.nlSdk.screen.fullscreen) {
+				var fs = window.nlSdk.screen.fullscreen;
+				if (fs.status === "on") {
+					fs.exit();
+				} else {
+					fs.request();
+				}
+				sdkDone = true;
+			}
+		} catch (e) {
+			sdkDone = false;
+		}
+		if (sdkDone) return;
+		try {
+			var el = document.getElementById("canvas") || document.documentElement;
+			if (document.fullscreenElement) {
+				document.exitFullscreen();
+			} else if (el.requestFullscreen) {
+				el.requestFullscreen();
+			} else if (el.webkitRequestFullscreen) {
+				el.webkitRequestFullscreen();
+			}
+			if (screen.orientation && screen.orientation.lock) {
+				screen.orientation.lock("landscape").catch(function () {});
+			}
+		} catch (e) {}
+	};
+
+	// 1.9: cloud save of progress for logged-in players.
+	window.nlSave = function (json) {
+		try {
+			if (!window.nlPlayer || !window.nlPlayer.setData) return;
+			window.nlPlayer.setData({ nl: JSON.parse(json) }, false);
+			window.nlDataRaw = json;
+		} catch (e) {}
+	};
+
+	window.nlLoad = function () {
+		return window.nlDataRaw || "";
+	};
+</script>
